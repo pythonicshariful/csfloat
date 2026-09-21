@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CSFloat Launcher Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+
+  <!-- Background particles -->
+  <div class="bg-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <div class="layout">
+
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">CSFloat</div>
+          <div class="brand-sub">Launcher v2</div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-section="launcher">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 3l14 9-14 9V3z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Launcher
+        </a>
+        <a href="#" class="nav-item" data-section="accounts">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Accounts
+        </a>
+        <a href="#" class="nav-item" data-section="logs">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Logs
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-badge" id="globalStatus">
+          <span class="status-dot idle"></span>
+          <span>Idle</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===== MAIN ===== -->
+    <main class="main">
+
+      <!-- Header -->
+      <header class="top-bar">
+        <div>
+          <h1 class="page-title">Launch Control</h1>
+          <p class="page-sub">Configure profiles, tabs and cookies — then fire.</p>
+        </div>
+        <div class="top-bar-actions">
+          <button class="btn btn-ghost" id="closeAllBtn" onclick="closeAll()">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Close All
+          </button>
+          <button class="btn btn-primary" id="launchBtn" onclick="launch()">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M5 3l14 9-14 9V3z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Launch
+          </button>
+        </div>
+      </header>
+
+      <!-- ===== CONFIG CARDS ROW ===== -->
+      <div class="cards-row">
+
+        <!-- Profiles Card -->
+        <div class="card glow-card">
+          <div class="card-header">
+            <div class="card-icon icon-blue">
+              <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <div>
+              <div class="card-title">Chrome Profiles</div>
+              <div class="card-desc">Number of browser instances</div>
+            </div>
+          </div>
+          <div class="counter-wrap">
+            <button class="counter-btn" onclick="adjust('profiles', -1)">−</button>
+            <div class="counter-display">
+              <span class="counter-value" id="profilesVal">3</span>
+              <span class="counter-label">profiles</span>
+            </div>
+            <button class="counter-btn" onclick="adjust('profiles', 1)">+</button>
+          </div>
+          <input type="range" class="slider" id="profilesSlider" min="1" max="20" value="3"
+                 oninput="syncSlider('profiles', this.value)" />
+          <div class="slider-labels"><span>1</span><span>20</span></div>
+        </div>
+
+        <!-- Tabs Card -->
+        <div class="card glow-card">
+          <div class="card-header">
+            <div class="card-icon icon-purple">
+              <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="6" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M2 10h20M6 6V4M10 6V4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <div>
+              <div class="card-title">Tabs per Profile</div>
+              <div class="card-desc">Tabs opened in each window</div>
+            </div>
+          </div>
+          <div class="counter-wrap">
+            <button class="counter-btn" onclick="adjust('tabs', -1)">−</button>
+            <div class="counter-display">
+              <span class="counter-value" id="tabsVal">2</span>
+              <span class="counter-label">tabs</span>
+            </div>
+            <button class="counter-btn" onclick="adjust('tabs', 1)">+</button>
+          </div>
+          <input type="range" class="slider" id="tabsSlider" min="1" max="30" value="2"
+                 oninput="syncSlider('tabs', this.value)" />
+          <div class="slider-labels"><span>1</span><span>30</span></div>
+        </div>
+
+        <!-- Target URL Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon icon-green">
+              <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <div>
+              <div class="card-title">Target URL</div>
+              <div class="card-desc">Opened in every tab</div>
+            </div>
+          </div>
+          <input type="text" class="url-input" id="targetUrl" value="https://csfloat.com/db" />
+          <div class="summary-stats">
+            <div class="stat">
+              <span class="stat-val" id="totalTabsStat">6</span>
+              <span class="stat-lbl">Total tabs</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat">
+              <span class="stat-val" id="profilesStat">3</span>
+              <span class="stat-lbl">Profiles</span>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /cards-row -->
+
+      <!-- ===== ACCOUNTS / COOKIES ===== -->
+      <div class="card cookie-card">
+        <div class="cookie-header">
+          <div class="card-header" style="margin-bottom:0">
+            <div class="card-icon icon-orange">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <div class="card-title">Account Cookies</div>
+              <div class="card-desc">One account per line &nbsp;·&nbsp; <code>login:pass:::shared_secret:::identity_secret</code></div>
+            </div>
+          </div>
+          <div class="cookie-actions">
+            <button class="btn btn-ghost btn-sm" onclick="clearCookies()">Clear</button>
+            <button class="btn btn-ghost btn-sm" onclick="parseCookiesPreview()">Preview</button>
+            <button class="btn btn-ghost btn-sm" id="getCodesBtn" onclick="getCodes()" style="color:var(--green);border-color:var(--green)">⚡ Get Codes</button>
+          </div>
+        </div>
+
+        <textarea
+          id="cookieInput"
+          class="cookie-textarea"
+          spellcheck="false"
+          placeholder="mainius1:Parolius1:::UbOqdqmTmCh0z5eAfVLi/3JVFlU=:::hmBG3K6gVqETaJ9ewi76N38fHUw=
+gegi47:gigiglobalelite1:::dRi43qWyqt9HZ75e2O3Kdj5o0GU=:::KBOzVTiSOTsYia5MiM74wykRV4Y=
+wemakeitlegal:2WQ42@C6!Y8Q:::M78whG3kcl94rewmIM91nvynX58=:::7WztaFK5fObAe9tX29p1EZ43Lis="
+        ></textarea>
+
+        <div id="accountPreview" class="account-preview hidden"></div>
+
+        <!-- Live 2FA Codes panel -->
+        <div id="codesPanel" class="codes-panel hidden">
+          <div class="codes-panel-header">
+            <span>🔑 Live Steam Guard Codes</span>
+            <span class="codes-timer" id="codesTimer">⏱ expires in <strong id="timerVal">30</strong>s</span>
+          </div>
+          <div id="codesGrid" class="codes-grid"></div>
+        </div>
+      </div>
+
+      <!-- ===== LOGS ===== -->
+      <div class="card log-card">
+        <div class="card-header" style="margin-bottom:12px">
+          <div class="card-icon icon-gray">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <div class="card-title">Launch Log</div>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="clearLog()">Clear log</button>
+        </div>
+        <div id="logOutput" class="log-output">
+          <div class="log-placeholder">Waiting for launch…</div>
+        </div>
+      </div>
+
+    </main>
+  </div><!-- /layout -->
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
