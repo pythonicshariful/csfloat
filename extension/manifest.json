@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "CSFloat DB Price Injector",
+  "version": "2.0",
+  "description": "Injects market listing prices directly into each row of the CSFloat Database page.",
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://csfloat.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://csfloat.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ]
+}

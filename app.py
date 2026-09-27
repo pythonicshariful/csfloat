@@ -6,8 +6,11 @@ import hmac
 import hashlib
 import struct
 import base64
+import platform
+import subprocess
+import winreg
 from flask import Flask, render_template, request, jsonify
-from selenium import webdriver
+import undetected_chromedriver as uc
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -17,11 +20,37 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 app = Flask(__name__)
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
 # Track active drivers so we can close them later
 active_drivers = []
 driver_lock = threading.Lock()
 
 TARGET_URL = "https://csfloat.com/db"
+
+def get_chrome_major_version():
+    """Auto-detect the major version of Chrome installed on Windows."""
+    if platform.system() == "Windows":
+        try:
+            # Check current user registry
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
+            version, _ = winreg.QueryValueEx(key, "version")
+            return int(version.split('.')[0])
+        except Exception:
+            pass
+        try:
+            # Check local machine registry
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome")
+            version, _ = winreg.QueryValueEx(key, "version")
+            return int(version.split('.')[0])
+        except Exception:
+            pass
+    return None
 
 # ------------------------------------------------------------------
 # Steam Guard 2FA code generator (no external library needed)
@@ -52,6 +81,8 @@ def generate_steam_guard_code(shared_secret: str) -> str:
 # ------------------------------------------------------------------
 def parse_accounts(raw: str):
     accounts = []
+    if not raw or not isinstance(raw, str):
+        return accounts
     for line in raw.strip().splitlines():
         line = line.strip()
         if not line:
@@ -70,25 +101,33 @@ def parse_accounts(raw: str):
 # ------------------------------------------------------------------
 # Main launch function - full login automation
 # ------------------------------------------------------------------
-def launch_profile(profile_index: int, account: dict, num_tabs: int, filters: dict = None):
+def launch_profile(profile_index: int, account: dict, num_tabs: int, scraper_config: dict = None):
     """Open Chrome profile, log in to CSFloat via Steam, open extra tabs."""
     profile_path = os.path.join(os.getcwd(), "chrome_profiles", f"profile_{profile_index}")
     os.makedirs(profile_path, exist_ok=True)
 
-    options = Options()
+    options = uc.ChromeOptions()
     options.add_argument(f"--user-data-dir={profile_path}")
     options.add_argument("--profile-directory=Default")
+    
+    # Load the custom price injector extension
+    extension_path = os.path.join(os.getcwd(), "extension")
+    options.add_argument(f"--load-extension={extension_path}")
+    
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
 
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options,
-        )
+        chrome_v = get_chrome_major_version()
+        kwargs = {
+            "options": options,
+            "user_data_dir": profile_path,
+            "use_subprocess": True
+        }
+        if chrome_v:
+            kwargs["version_main"] = chrome_v
+            
+        driver = uc.Chrome(**kwargs)
         wait = WebDriverWait(driver, 20)
 
         # ── Step 1: Open CSFloat ──────────────────────────────────────
@@ -205,227 +244,146 @@ def launch_profile(profile_index: int, account: dict, num_tabs: int, filters: di
             except Exception:
                 pass
 
-        # ── Step 10: Always navigate to the exact target URL ──────────
-        # After Steam redirects back, CSFloat might land on /  or /login
-        # so we always force-navigate to the correct page.
-        driver.get(TARGET_URL)
-        time.sleep(3)   # give the Angular app time to fully load
+        # ── Step 10: Run the Scraper on each Link ──────────────────────
+        if not scraper_config:
+            scraper_config = {"db_links": ["https://csfloat.com/db"], "min_price": 300.0}
 
-        # ── Step 11: Click Filter button to open sidebar ─────
-        try:
-            filter_btn = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((
-                    By.CSS_SELECTOR,
-                    "button[mat-raised-button][color='primary'] mat-icon[data-mat-icon-name='filter']"
-                ))
-            )
-            driver.execute_script("arguments[0].closest('button').click();", filter_btn)
-            # Wait for the filter sidebar drawer to open
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, "mat-drawer.filter-drawer.mat-drawer-opened")
-                )
-            )
-            time.sleep(1)
+        min_price = scraper_config.get("min_price", 300.0)
+        db_links  = scraper_config.get("db_links",  ["https://csfloat.com/db"])
 
-            # ── Step 11.5: Apply Filters if provided ─────
-            if filters:
+        print(f"Starting scraper for {len(db_links)} links, min ${min_price}")
+
+        # ── JS helpers ──────────────────────────────────────────────────
+        # Detect if the page is showing a turnstile / error state
+        turnstile_check_js = """
+            const err = document.querySelector('.container .header span, .error-text, [class*="error"] span');
+            return err ? err.innerText : null;
+        """
+
+        # Extract items from Angular mat-table rows
+        extract_js = """
+            const minPrice = arguments[0];
+            const results  = [];
+            const rows = document.querySelectorAll('mat-row');
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('mat-cell');
+                // price cell usually contains $ sign
+                let price = 0, priceText = '';
+                let rowText = row.innerText || '';
+                // Find $ amount
+                const priceMatch = rowText.match(/\\$([\\d,]+\\.?\\d*)/);
+                if (priceMatch) {
+                    price = parseFloat(priceMatch[1].replace(/,/g, ''));
+                }
+                if (price >= minPrice) {
+                    results.push({
+                        name:  rowText.replace(/\\n/g, ' ').substring(0, 120).trim(),
+                        price: price
+                    });
+                }
+            });
+            return results;
+        """
+
+        found_items = []
+        found_set   = set()
+
+        def wait_for_rows(max_wait=15):
+            """Wait until mat-row elements appear on the page."""
+            for _ in range(max_wait):
+                count = driver.execute_script("return document.querySelectorAll('mat-row').length;")
+                if count and count > 0:
+                    return True
+                time.sleep(1)
+            return False
+
+        def check_turnstile():
+            """Returns error text if turnstile / error is showing."""
+            try:
+                return driver.execute_script(turnstile_check_js)
+            except Exception:
+                return None
+
+        for link in db_links:
+            print(f"  → Navigating to {link}")
+            driver.get(link)
+            time.sleep(8)  # wait longer for Angular to render
+
+            page_num = 1
+            retry_count = 0
+
+            while page_num <= 20:  # max 20 pages per link (~2000 items)
+
+                # ── Check turnstile ──────────────────────────────────
+                err_text = check_turnstile()
+                if err_text and ("turnstile" in err_text.lower() or "failed" in err_text.lower() or "error" in err_text.lower()):
+                    print(f"  ⚠ Turnstile/error detected on page {page_num}: '{err_text}'. Waiting 8s and retrying...")
+                    time.sleep(8)
+                    driver.refresh()
+                    time.sleep(5)
+                    retry_count += 1
+                    if retry_count >= 3:
+                        print(f"  ✘ Skipping {link} after 3 failed retries")
+                        break
+                    continue
+
+                retry_count = 0  # reset on success
+
+                # ── Wait for rows ─────────────────────────────────────
+                rows_loaded = wait_for_rows(max_wait=12)
+                if not rows_loaded:
+                    print(f"  ⚠ No rows found on page {page_num}, stopping this link.")
+                    break
+
+                # ── Scroll to load all rows ───────────────────────────
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(0.5)
+
+                # ── Extract items ─────────────────────────────────────
+                items = driver.execute_script(extract_js, min_price)
+                new_count = 0
+                if items:
+                    for it in items:
+                        key = f"{it['name']}|{it['price']}"
+                        if key not in found_set:
+                            found_set.add(key)
+                            item_str = f"[{link}] Found: {it['name']} (Price: ${it['price']})"
+                            found_items.append(item_str)
+                            print(item_str)
+                            new_count += 1
+
+                print(f"  Page {page_num}: {new_count} new items above ${min_price}")
+
+                # ── Next page ─────────────────────────────────────────
                 try:
-                    time.sleep(1) # Extra wait for sidebar animation
-                    
-                    # Helper function to JS-set value of Angular inputs
-                    def set_ng_input(selector, value):
-                        elem = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", elem)
-                        time.sleep(0.2)
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", elem, value)
+                    next_btn = driver.find_element(
+                        By.CSS_SELECTOR,
+                        "button.mat-mdc-paginator-navigation-next, "
+                        "button.mat-paginator-navigation-next"
+                    )
+                    classes = next_btn.get_attribute("class") or ""
+                    disabled = not next_btn.is_enabled() or "disabled" in classes
+                    if disabled:
+                        print(f"  ✓ Last page reached for {link}")
+                        break
+                    driver.execute_script("arguments[0].click();", next_btn)
+                    time.sleep(3.5)  # human-like delay
+                    page_num += 1
+                except Exception:
+                    print(f"  ✓ No paginator found — done with {link}")
+                    break
 
-                    # Min Float
-                    min_float = filters.get("minFloat", "")
-                    if min_float:
-                        set_ng_input("input[formcontrolname='min']", min_float)
-                        
-                    # Max Float
-                    max_float = filters.get("maxFloat", "")
-                    if max_float:
-                        set_ng_input("input[formcontrolname='max']", max_float)
+        # ── Write results ─────────────────────────────────────────────
+        if found_items:
+            with open("found_expensive_items.txt", "a", encoding="utf-8") as f:
+                for item in found_items:
+                    f.write(item + "\\n")
+            print(f"✔ Saved {len(found_items)} items to found_expensive_items.txt")
+        else:
+            print("ℹ No items above threshold found.")
 
-                    # Paint Seed
-                    paint_seed = filters.get("paintSeed", "")
-                    if paint_seed:
-                        set_ng_input("input.seed-input", paint_seed)
-                        
-                    # Min Age
-                    min_age = filters.get("minAge", "")
-                    if min_age:
-                        set_ng_input("input[formcontrolname='minAge']", min_age)
-                        
-                    # Max Age
-                    max_age = filters.get("maxAge", "")
-                    if max_age:
-                        set_ng_input("input[formcontrolname='maxAge']", max_age)
-                        
-                    # Special (Checkboxes)
-                    if filters.get("statTrak", False):
-                        cb = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'StatTrak')]/ancestor::mat-checkbox//input[@type='checkbox']"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", cb)
-                        time.sleep(0.2)
-                        driver.execute_script("if(!arguments[0].checked) arguments[0].click();", cb)
-                        
-                    if filters.get("souvenir", False):
-                        cb = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Souvenir')]/ancestor::mat-checkbox//input[@type='checkbox']"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", cb)
-                        time.sleep(0.2)
-                        driver.execute_script("if(!arguments[0].checked) arguments[0].click();", cb)
-                        
-                    if filters.get("normal", False):
-                        cb = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Normal')]/ancestor::mat-checkbox//input[@type='checkbox']"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", cb)
-                        time.sleep(0.2)
-                        driver.execute_script("if(!arguments[0].checked) arguments[0].click();", cb)
-
-                    # SteamID 64
-                    steam_id = filters.get("steamId", "")
-                    if steam_id:
-                        set_ng_input("input[formcontrolname='steamId']", steam_id)
-                        
-                    # Source (Only)
-                    source_val = filters.get("source", "")
-                    if source_val:
-                        source_select = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "mat-select[formcontrolname='only']"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", source_select)
-                        time.sleep(0.2)
-                        driver.execute_script("arguments[0].click();", source_select)
-                        time.sleep(0.5)
-                        
-                        options = driver.find_elements(By.CSS_SELECTOR, "mat-option")
-                        for opt in options:
-                            if source_val in opt.text:
-                                driver.execute_script("arguments[0].click();", opt)
-                                break
-                        time.sleep(0.5)
-                        
-                    # Stickers
-                    stickers_str = filters.get("stickers", "")
-                    if stickers_str:
-                        sticker_names = [s.strip() for s in stickers_str.split(',') if s.strip()]
-                        sticker_inputs = driver.find_elements(By.CSS_SELECTOR, "app-sticker-search input[matinput]")
-                        for i, name in enumerate(sticker_names):
-                            if i < len(sticker_inputs):
-                                s_in = sticker_inputs[i]
-                                driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", s_in)
-                                time.sleep(0.2)
-                                s_in.send_keys(name)
-                                time.sleep(0.5)
-                                # Try to click the first autocomplete option
-                                try:
-                                    opts = WebDriverWait(driver, 2).until(
-                                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "mat-option"))
-                                    )
-                                    if opts:
-                                        driver.execute_script("arguments[0].click();", opts[0])
-                                except Exception:
-                                    pass
-                                time.sleep(0.5)
-                                
-                    # Charms
-                    charm_name = filters.get("charm", "")
-                    if charm_name:
-                        charm_input = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "app-keychain-search input[matinput]"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", charm_input)
-                        time.sleep(0.2)
-                        charm_input.send_keys(charm_name)
-                        time.sleep(0.5)
-                        try:
-                            opts = WebDriverWait(driver, 2).until(
-                                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "mat-option"))
-                            )
-                            if opts:
-                                driver.execute_script("arguments[0].click();", opts[0])
-                        except Exception:
-                            pass
-                        time.sleep(0.5)
-
-
-                        
-                    # Sort By
-                    sort_val = filters.get("sort", "")
-                    if sort_val:
-                        sort_map = {
-                            "0": "Lowest Float",
-                            "1": "Highest Float",
-                            "2": "Lowest Price",
-                            "3": "Highest Price",
-                            "4": "Recent"
-                        }
-                        if sort_val in sort_map:
-                            sort_select = WebDriverWait(driver, 3).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, "mat-select[formcontrolname='order']"))
-                            )
-                            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", sort_select)
-                            time.sleep(0.2)
-                            driver.execute_script("arguments[0].click();", sort_select)
-                            time.sleep(0.5)
-                            
-                            option_text = sort_map[sort_val]
-                            options = driver.find_elements(By.CSS_SELECTOR, "mat-option")
-                            for opt in options:
-                                if option_text in opt.text:
-                                    driver.execute_script("arguments[0].click();", opt)
-                                    break
-                            time.sleep(0.5)
-                            
-                    # Rarity
-                    rarity_val = filters.get("rarity", "")
-                    if rarity_val:
-                        rarity_map = {
-                            "1": "Consumer Grade",
-                            "2": "Industrial Grade",
-                            "3": "Mil-Spec Grade",
-                            "4": "Restricted",
-                            "5": "Classified",
-                            "6": "Covert",
-                            "7": "Contraband"
-                        }
-                        if rarity_val in rarity_map:
-                            rarity_select = WebDriverWait(driver, 3).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, "mat-select[formcontrolname='rarity']"))
-                            )
-                            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", rarity_select)
-                            time.sleep(0.2)
-                            driver.execute_script("arguments[0].click();", rarity_select)
-                            time.sleep(0.5)
-                            
-                            option_text = rarity_map[rarity_val]
-                            options = driver.find_elements(By.CSS_SELECTOR, "mat-option")
-                            for opt in options:
-                                if option_text in opt.text:
-                                    driver.execute_script("arguments[0].click();", opt)
-                                    break
-                            time.sleep(0.5)
-                            
-                except Exception as e:
-                    print(f"Error applying filters: {e}")
-
-        except Exception:
-            pass  # Filter button not found or sidebar did not open
-
-        # ── Step 12: Open additional tabs ─────────────────────────────
-        for _ in range(1, num_tabs):
-            driver.execute_script(f"window.open('{TARGET_URL}', '_blank');")
-            time.sleep(0.5)
 
 
         with driver_lock:
@@ -445,27 +403,87 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/results")
+def results():
+    return render_template("results.html")
+
+
+@app.route("/api/results")
+def api_results():
+    """Parse found_expensive_items.txt and return structured JSON."""
+    items = []
+    filepath = os.path.join(os.getcwd(), "found_expensive_items.txt")
+    if not os.path.exists(filepath):
+        return jsonify({"items": [], "total": 0})
+
+    seen = set()
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Split on literal \n entries (each item ends with \\n in file)
+    raw_lines = [l.strip() for l in content.replace("\\n", "\n").splitlines() if l.strip()]
+
+    import re
+    for line in raw_lines:
+        # Parse: [URL] Found: NAME (Price: $PRICE)
+        m = re.match(r'\[(.+?)\] Found: (.+?) \(Price: \$([0-9.]+)\)', line)
+        if not m:
+            continue
+        url   = m.group(1)
+        name  = m.group(2).strip()
+        price = float(m.group(3))
+
+        # Dedup by name+price
+        key = f"{name}|{price}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Extract float value from name string
+        float_match = re.search(r'(\d+\.\d+)\s+FN', name)
+        float_val = float_match.group(1) if float_match else ""
+
+        # Clean up name — remove float, rank, seed etc
+        clean_name = re.sub(r'#\d+\s+', '', name)         # remove #rank
+        clean_name = re.sub(r'\d+\.\d{10,}\s+FN', '', clean_name)  # remove float
+        clean_name = re.sub(r'\s+\d+\s+', ' ', clean_name)         # remove seed
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+
+        items.append({
+            "rank":      re.search(r'#(\d+)', name).group(1) if re.search(r'#(\d+)', name) else "",
+            "name":      clean_name,
+            "float":     float_val,
+            "price":     price,
+            "source_url": url,
+        })
+
+    # Sort by price descending
+    items.sort(key=lambda x: x["price"], reverse=True)
+    return jsonify({"items": items, "total": len(items)})
+
+
+
+
 @app.route("/launch", methods=["POST"])
 def launch():
     data = request.get_json(force=True)
     num_profiles = int(data.get("profiles", 1))
     num_tabs     = int(data.get("tabs",     1))
     raw_cookies  = data.get("cookies",      "")
-    filters = {
-        "sort": data.get("filterSort", ""),
-        "rarity": data.get("filterRarity", ""),
-        "minFloat": data.get("filterMinFloat", ""),
-        "maxFloat": data.get("filterMaxFloat", ""),
-        "paintSeed": data.get("filterPaintSeed", ""),
-        "minAge": data.get("filterMinAge", ""),
-        "maxAge": data.get("filterMaxAge", ""),
-        "statTrak": data.get("filterStatTrak", False),
-        "souvenir": data.get("filterSouvenir", False),
-        "normal": data.get("filterNormal", False),
-        "stickers": data.get("filterStickers", ""),
-        "charm": data.get("filterCharm", ""),
-        "source": data.get("filterSource", ""),
-        "steamId": data.get("filterSteamId", "")
+    min_price_str = data.get("minPrice", "300")
+    try:
+        min_price = float(min_price_str)
+    except ValueError:
+        min_price = 300.0
+
+    raw_links = data.get("dbLinks", "")
+    db_links = [l.strip() for l in raw_links.splitlines() if l.strip()]
+    if not db_links:
+        db_links = ["https://csfloat.com/db"]
+
+    scraper_config = {
+        "min_price": min_price,
+        "db_links": db_links
     }
 
     accounts = parse_accounts(raw_cookies)
@@ -479,7 +497,7 @@ def launch():
     threads = []
 
     def worker(idx, acc):
-        ok, err = launch_profile(idx, acc, num_tabs, filters)
+        ok, err = launch_profile(idx, acc, num_tabs, scraper_config)
         results.append({"profile": idx + 1, "ok": ok, "error": err})
 
     for i, acc in enumerate(accounts):

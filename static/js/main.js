@@ -2,8 +2,7 @@
    STATE
    ========================================================= */
 const state = {
-  profiles: 3,
-  tabs:     2,
+  profiles: 1,
 };
 
 let _codeTimer = null;   // countdown interval
@@ -150,26 +149,14 @@ async function launch() {
   const btn     = document.getElementById('launchBtn');
   const cookies = document.getElementById('cookieInput').value;
   const url     = document.getElementById('targetUrl').value.trim() || 'https://csfloat.com/db';
-  const filterSort = document.getElementById('filterSort').value;
-  const filterRarity = document.getElementById('filterRarity').value;
-  const filterMinFloat = document.getElementById('filterMinFloat').value;
-  const filterMaxFloat = document.getElementById('filterMaxFloat').value;
-  const filterPaintSeed = document.getElementById('filterPaintSeed').value;
-  const filterMinAge = document.getElementById('filterMinAge').value;
-  const filterMaxAge = document.getElementById('filterMaxAge').value;
-  const filterStatTrak = document.getElementById('filterStatTrak').checked;
-  const filterSouvenir = document.getElementById('filterSouvenir').checked;
-  const filterNormal = document.getElementById('filterNormal').checked;
-  const filterStickers = document.getElementById('filterStickers').value;
-  const filterCharm = document.getElementById('filterCharm').value;
-  const filterSource = document.getElementById('filterSource').value;
-  const filterSteamId = document.getElementById('filterSteamId').value;
+  const minPrice = document.getElementById('minPrice').value;
+  const dbLinks = document.getElementById('dbLinksInput').value;
 
 
   btn.disabled = true;
   setStatus('running', 'Running…');
 
-  log(`▶ Launching ${state.profiles} profile(s) · ${state.tabs} tab(s) each → ${url}`, 'info');
+  log(`▶ Launching ${state.profiles} profile(s) → ${url}`, 'info');
 
   try {
     const res  = await fetch('/launch', {
@@ -180,20 +167,8 @@ async function launch() {
         tabs:     state.tabs,
         cookies:  cookies,
         url:      url,
-        filterSort,
-        filterRarity,
-        filterMinFloat,
-        filterMaxFloat,
-        filterPaintSeed,
-        filterMinAge,
-        filterMaxAge,
-        filterStatTrak,
-        filterSouvenir,
-        filterNormal,
-        filterStickers,
-        filterCharm,
-        filterSource,
-        filterSteamId
+        minPrice: minPrice,
+        dbLinks:  dbLinks
       }),
     });
 
